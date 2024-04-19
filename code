@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+contract VestingContract {
+    struct VestingSchedule {
+        uint256 amount;
+        uint256 startTime;
+        uint256 duration;
+        uint256 cliff;
+        bool isClaimed;
+    }
+
+    struct Stakeholder {
+        VestingSchedule vestingSchedule;
+        bool isWhitelisted;
+    }
+
+    struct Organization {
+        address tokenAddress;
+        mapping(address => Stakeholder) stakeholders;
+        mapping(address => bool) isAdmin;
+    }
+
+    mapping(address => Organization) private organizations;
+
+    event OrganizationRegistered(address indexed organization, address indexed tokenAddress);
+    event StakeholderAdded(address indexed organization, address indexed stakeholder, uint256 amount, uint256 startTime, uint256 duration, uint256 cliff);
+    event TokensClaimed(address indexed organization, address indexed stakeholder, uint256 amount);
+
+    modifier onlyAdmin(address organization) {
+        require(organizations[organization].isAdmin[msg.sender], "Caller is not an admin");
+        _;
+    }
+
+    function registerOrganization(address tokenAddress) external {
+        require(tokenAddress != address(0), "Invalid token address");
+        require(organizations[msg.sender].tokenAddress == address(0), "Organization already registered");
+
+        organizations[msg.sender].tokenAddress = tokenAddress;
+        organizations[msg.sender].isAdmin[msg.sender] = true;
+
+        emit OrganizationRegistered(msg.sender, tokenAddress);
+    }
+
+    function addStakeholder(address organization, address stakeholder, uint256 amount, uint256 startTime, uint256 duration, uint256 cliff) external onlyAdmin(organization) {
+        require(stakeholder != address(0), "Invalid stakeholder address");
+        require(organizations[organization].tokenAddress != address(0), "Organization not registered");
+        require(organizations[organization].stakeholders[stakeholder].vestingSchedule.amount == 0, "Stakeholder already added");
+
+        IERC20 token = IERC20(organizations[organization].tokenAddress);
+        require(token.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+
+        organizations[organization].stakeholders[stakeholder] = Stakeholder(
+            VestingSchedule(amount, startTime, duration, cliff, false),
+            true
+        );
+
+        emit StakeholderAdded(organization, stakeholder, amount, startTime, duration, cliff);
+    }
+
+    function claimTokens() external {
+        Organization storage org = organizations[msg.sender];
+        Stakeholder storage stakeholder = org.stakeholders[msg.sender];
+        require(stakeholder.isWhitelisted, "Caller is not whitelisted");
+
+        VestingSchedule storage vestingSchedule = stakeholder.vestingSchedule;
+        require(!vestingSchedule.isClaimed, "Tokens already claimed");
+        require(block.timestamp >= vestingSchedule.startTime + vestingSchedule.cliff, "Tokens not yet vested");
+
+        IERC20 token = IERC20(org.tokenAddress);
+        require(token.transfer(msg.sender, vestingSchedule.amount), "Token transfer failed");
+
+        vestingSchedule.isClaimed = true;
+
+        emit TokensClaimed(msg.sender, org.tokenAddress, vestingSchedule.amount);
+    }
+
+    function whitelistStakeholder(address organization, address stakeholder) external onlyAdmin(organization) {
+        require(organizations[organization].stakeholders[stakeholder].vestingSchedule.amount > 0, "Stakeholder not found");
+        organizations[organization].stakeholders[stakeholder].isWhitelisted = true;
+    }
+
+    function revokeWhitelist(address organization, address stakeholder) external onlyAdmin(organization) {
+        organizations[organization].stakeholders[stakeholder].isWhitelisted = false;
+    }
+}
